@@ -108,7 +108,7 @@ def loss(y_true_cls, y_pred_cls,
     the first part we use dice loss instead of weighted logloss,
     the second part is the iou loss defined in the paper
     :param y_true_cls: ground truth of text
-    :param y_pred_cls: prediction os text
+    :param y_pred_cls: prediction of text
     :param y_true_geo: ground truth of geometry
     :param y_pred_geo: prediction of geometry
     :param training_mask: mask used in training, to ignore some text annotated by ###

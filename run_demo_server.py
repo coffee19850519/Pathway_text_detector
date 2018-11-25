@@ -13,26 +13,10 @@ import functools
 import logging
 import collections
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(Configer.LOGGING_FILE_PATH)
 logger.setLevel(logging.INFO)
 
 
-@functools.lru_cache(maxsize=1)
-def get_host_info():
-    ret = {}
-    with open('/proc/cpuinfo') as f:
-        ret['cpuinfo'] = f.read()
-
-    with open('/proc/meminfo') as f:
-        ret['meminfo'] = f.read()
-
-    with open('/proc/loadavg') as f:
-        ret['loadavg'] = f.read()
-
-    return ret
-
-
-@functools.lru_cache(maxsize=100)
 def get_predictor(checkpoint_path):
     logger.info('loading model')
     import tensorflow as tf
@@ -140,25 +124,6 @@ def get_predictor(checkpoint_path):
     return predictor
 
 
-### the webserver
-from flask import Flask, request, render_template
-import argparse
-
-
-class Config:
-    SAVE_DIR = 'static/results'
-
-
-config = Config()
-
-
-app = Flask(__name__)
-
-@app.route('/')
-def index():
-    return render_template('index.html', session_id='dummy_session_id')
-
-
 def draw_illu(illu, rst):
     for t in rst['text_lines']:
         d = np.array([t['x0'], t['y0'], t['x1'], t['y1'], t['x2'],
@@ -168,56 +133,49 @@ def draw_illu(illu, rst):
     return illu
 
 
-def save_result(img, rst):
-    #session_id = str(uuid.uuid1())
-    dirpath = os.path.join(config.SAVE_DIR, session_id)
-    os.makedirs(dirpath)
 
-    # save input image
-    output_path = os.path.join(dirpath, 'input.png')
-    cv2.imwrite(output_path, img)
+def detect_text_regions_from_image (image_path):
+    if not os.path.exists(Configer.EAST_MODEL_CHECKPOINT_FOLD):
+        raise RuntimeError(
+            'Checkpoint `{}` not found, please '.format(
+                Configer.EAST_MODEL_CHECKPOINT_FOLD))
+    #load test images
+    marked_result_path, result_json_path = generate_result_file_path(
+            image_path)
+    img = cv2.imread(image_path, 1)
+    rst = get_predictor(Configer.EAST_MODEL_CHECKPOINT_FOLD)(img)
 
     # save illustration
-    output_path = os.path.join(dirpath, 'output.png')
-    cv2.imwrite(output_path, draw_illu(img.copy(), rst))
+    cv2.imwrite(marked_result_path, draw_illu(img.copy(), rst))
 
     # save json data
-    output_path = os.path.join(dirpath, 'result.json')
-    with open(output_path, 'w') as f:
-        json.dump(rst, f)
+    with open(result_json_path, 'w') as f:
+      json.dump(rst, f)
 
-    rst['session_id'] = session_id
-    return rst
+    del img
 
 
+def generate_result_file_path(image_path):
+    image_fold, image_file_name = os.path.split(image_path)
+    image_file_name, image_file_ext = os.path.splitext(image_file_name)
+    marked_result_path = os.path.join(image_fold,'marked_'+image_file_name,
+                             image_file_ext)
+    result_json_path = os.path.join(image_fold, 'result.json')
+    return marked_result_path,result_json_path
 
-def detect_text_regions_from_image (image_file):
-    # global checkpoint_path
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('--port', default=8769, type=int)
+if __name__ == '__main__':
+  # global checkpoint_path
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--test_image_path', description = 'set path '
+                                                            'for image to be '
+                                                            'processed.')
+    args = parser.parse_args()
+    detect_text_regions_from_image(args[0])
+
     # parser.add_argument('--checkpoint-path', default=checkpoint_path)
     # parser.add_argument('--debug', action='store_true')
     # args = parser.parse_args()
     # checkpoint_path = args.checkpoint_path
-
-    if not os.path.exists(Configer.EAST_MODEL_CHECKPOINT_PATH):
-        raise RuntimeError(
-            'Checkpoint `{}` not found, please '.format(
-                Configer.EAST_MODEL_CHECKPOINT_PATH))
-    #load test images
-    #bio = io.BytesIO()
-    #request.files['image'].save(bio)
-    img = cv2.imread(image_file, 1)
-    rst = get_predictor(Configer.EAST_MODEL_CHECKPOINT_PATH)(img)
-
-    save_result(img, rst)
-    del img
-    #return render_template('index.html', session_id=rst['session_id'])
-
-    #app.debug = args.debug
-    #app.run('0.0.0.0', args.port)
-
-if __name__ == '__main__':
     pass
     #main()
 

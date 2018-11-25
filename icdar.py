@@ -9,7 +9,7 @@ import scipy.optimize
 import matplotlib.pyplot as plt
 import matplotlib.patches as Patches
 from shapely.geometry import Polygon
-
+from Configuration import Configer
 import tensorflow as tf
 
 from data_util import GeneratorEnqueuer
@@ -116,8 +116,8 @@ def crop_area(im, polys, tags, crop_background=False, max_tries=50):
     '''
     make random crop from the input image
     :param im:
-    :param polys:
-    :param tags:
+    :param text_polys:
+    :param text_tags:
     :param crop_background:
     :param max_tries:
     :return:
@@ -127,6 +127,7 @@ def crop_area(im, polys, tags, crop_background=False, max_tries=50):
     pad_w = w//10
     h_array = np.zeros((h + pad_h*2), dtype=np.int32)
     w_array = np.zeros((w + pad_w*2), dtype=np.int32)
+    #set poly boundry to 1 as mask
     for poly in polys:
         poly = np.round(poly, decimals=0).astype(np.int32)
         minx = np.min(poly[:, 0])
@@ -136,9 +137,9 @@ def crop_area(im, polys, tags, crop_background=False, max_tries=50):
         maxy = np.max(poly[:, 1])
         h_array[miny+pad_h:maxy+pad_h] = 1
     # ensure the cropped area not across a text
-    h_axis = np.where(h_array == 0)[0]
-    w_axis = np.where(w_array == 0)[0]
-    if len(h_axis) == 0 or len(w_axis) == 0:
+    h_axis = np.where(h_array == 0)[0]#Y-axis position to offset part
+    w_axis = np.where(w_array == 0)[0]#X-axis position to offset part
+    if len(h_axis) == 0 or len(w_axis) == 0:#no offset means poly fits the text
         return im, polys, tags
     for i in range(max_tries):
         xx = np.random.choice(w_axis, size=2)
@@ -157,11 +158,12 @@ def crop_area(im, polys, tags, crop_background=False, max_tries=50):
         if polys.shape[0] != 0:
             poly_axis_in_area = (polys[:, :, 0] >= xmin) & (polys[:, :, 0] <= xmax) \
                                 & (polys[:, :, 1] >= ymin) & (polys[:, :, 1] <= ymax)
-            selected_polys = np.where(np.sum(poly_axis_in_area, axis=1) == 4)[0]
+            selected_polys = np.where(np.sum(poly_axis_in_area, axis=1) ==
+                                      4)[0]#fit all requirements, all polys in area
         else:
             selected_polys = []
         if len(selected_polys) == 0:
-            # no text in this area
+            # no text_poly in this area
             if crop_background:
                 return im[ymin:ymax+1, xmin:xmax+1, :], polys[selected_polys], tags[selected_polys]
             else:
@@ -462,6 +464,7 @@ def restore_rectangle(origin, geometry):
 
 def generate_rbox(im_size, polys, tags):
     h, w = im_size
+    #used for recording poly_idx
     poly_mask = np.zeros((h, w), dtype=np.uint8)
     score_map = np.zeros((h, w), dtype=np.uint8)
     geo_map = np.zeros((h, w, 5), dtype=np.float32)
@@ -553,6 +556,8 @@ def generate_rbox(im_size, polys, tags):
             new_p1 = line_cross_point(backward_opposite, edge)
             new_p2 = line_cross_point(backward_opposite, edge_opposite)
             fitted_parallelograms.append([new_p0, new_p1, new_p2, new_p3, new_p0])
+
+
         areas = [Polygon(t).area for t in fitted_parallelograms]
         parallelogram = np.array(fitted_parallelograms[np.argmin(areas)][:-1], dtype=np.float32)
         # sort thie polygon
@@ -595,6 +600,7 @@ def generator(input_size=512, batch_size=32,
         score_maps = []
         geo_maps = []
         training_masks = []
+        #process image in random extraction
         for i in index:
             try:
                 im_fn = image_list[i]
@@ -633,7 +639,9 @@ def generator(input_size=512, batch_size=32,
                     geo_map_channels = 5 if FLAGS.geometry == 'RBOX' else 8
                     geo_map = np.zeros((input_size, input_size, geo_map_channels), dtype=np.float32)
                     training_mask = np.ones((input_size, input_size), dtype=np.uint8)
+                    #del im_padded
                 else:
+                    #crop text candidates
                     im, text_polys, text_tags = crop_area(im, text_polys, text_tags, crop_background=False)
                     if text_polys.shape[0] == 0:
                         continue
@@ -645,19 +653,21 @@ def generator(input_size=512, batch_size=32,
                     im_padded = np.zeros((max_h_w_i, max_h_w_i, 3), dtype=np.uint8)
                     im_padded[:new_h, :new_w, :] = im.copy()
                     im = im_padded
-                    # resize the image to input size
+                    # resize the image to max(input size, crop size)
                     new_h, new_w, _ = im.shape
                     resize_h = input_size
                     resize_w = input_size
                     im = cv2.resize(im, dsize=(resize_w, resize_h))
                     resize_ratio_3_x = resize_w/float(new_w)
                     resize_ratio_3_y = resize_h/float(new_h)
+                    #scaling text_ploy to size of crop image
                     text_polys[:, :, 0] *= resize_ratio_3_x
                     text_polys[:, :, 1] *= resize_ratio_3_y
                     new_h, new_w, _ = im.shape
                     score_map, geo_map, training_mask = generate_rbox((new_h, new_w), text_polys, text_tags)
+                    #del im_padded
 
-                if vis:
+                if vis:#plot the generative RBOX
                     fig, axs = plt.subplots(3, 2, figsize=(20, 30))
                     # axs[0].imshow(im[:, :, ::-1])
                     # axs[0].set_xticks([])
@@ -717,13 +727,15 @@ def generator(input_size=512, batch_size=32,
                 import traceback
                 traceback.print_exc()
                 continue
+            finally:
+                del im,im_padded
 
 
 def get_batch(num_workers, **kwargs):
     try:
         enqueuer = GeneratorEnqueuer(generator(**kwargs), use_multiprocessing=True)
         print('Generator use 10 batches for buffering, this may take a while, you can tune this yourself.')
-        enqueuer.start(max_queue_size=10, workers=num_workers)
+        enqueuer.start(max_queue_size=Configer.IMAGES_BATCH_IN_QUEUE, workers=num_workers)
         generator_output = None
         while True:
             while enqueuer.is_running():
